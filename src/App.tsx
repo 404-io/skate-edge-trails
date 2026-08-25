@@ -2,6 +2,7 @@ import { ChangeEvent, useMemo, useRef, useState } from "react";
 import { makeMetricSamples, simplify } from "./geometry";
 import type { Calibration, Foot, FootSample, MetricSample, PatternJson, Point } from "./model";
 import { analyseVideo } from "./pose";
+import { TaskDatasetPanel } from "./TaskDatasetPanel";
 
 const CORNER_NAMES = ["左奥", "右奥", "右手前", "左手前"];
 
@@ -133,6 +134,8 @@ function App() {
           <p className="legend"><span className="left-dot" /> 左足　<span className="right-dot" /> 右足　→ は推定した前進／後進方向です。イン／アウトは推測で確定しません。</p>
         </article>
       </section>
+
+      <TaskDatasetPanel tracks={tracks} videoName={file?.name} />
     </main>
   );
 }

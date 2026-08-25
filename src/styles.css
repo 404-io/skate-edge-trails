@@ -31,5 +31,20 @@ button.secondary { background: #e7eeee; color: #19303a; }
 .legend { color: #536b72; font-size: .82rem; line-height: 1.6; }
 .left-dot, .right-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 4px 0 10px; }
 .left-dot { background: #e05d5d; }.right-dot { background: #3674c7; }
+.task-panel { margin-top: 20px; }
+.task-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.task-header p { margin: 6px 0 0; color: #526a73; line-height: 1.55; }
+.task-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(290px, .95fr); gap: 20px; }
+.task-select { display: grid; gap: 7px; font-size: .85rem; font-weight: 750; }
+.task-select select, .review-row select, .review-row input { width: 100%; border: 1px solid #b8c9ce; border-radius: 8px; padding: 8px 10px; background: white; }
+.task-chart { display: block; width: 100%; min-height: 370px; background: #f8fbfb; border: 1px solid #dce6e8; border-radius: 12px; }
+.task-note { color: #526a73; font-size: .84rem; line-height: 1.65; }
+.review-list { display: grid; gap: 10px; margin-top: 14px; }
+.review-row { display: grid; grid-template-columns: 82px 90px 1fr 86px; gap: 8px; align-items: center; padding: 10px; border: 1px solid #dbe6e8; border-radius: 10px; }
+.review-row label { font-size: .78rem; color: #536b72; font-weight: 700; }
+.review-row strong { display: block; font-size: .92rem; color: #1b484b; }
+.review-row input { min-width: 0; }
+.training-state { margin: 14px 0 0; color: #526a73; font-size: .84rem; line-height: 1.5; }
+@media (max-width: 800px) { .task-header, .task-grid { display: grid; grid-template-columns: 1fr; }.review-row { grid-template-columns: 72px 78px 1fr; }.review-row button { grid-column: 1 / -1; } }
 @media (max-width: 800px) { main { width: min(100% - 20px, 720px); padding-top: 24px; }.content-grid { grid-template-columns: 1fr; }.workflow { align-items: stretch; }.workflow label, .workflow button { width: 100%; }.workflow input[type="number"], .file-input input { width: 100%; } }
 
