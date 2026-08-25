@@ -7,6 +7,14 @@ export type EdgeCode = "LFO" | "LFI" | "LBO" | "LBI" | "RFO" | "RFI" | "RBO" | "
 export type EdgeReviewStatus = "unreviewed" | "confirmed" | "corrected";
 export type HockeyRinkLineId = "goal-left" | "blue-left" | "center" | "blue-right" | "goal-right";
 export type HockeyLineColor = "red" | "blue";
+export type RinkProfileId = "iihf-60x30" | "iihf-60x26";
+
+export type RinkProfile = {
+  id: RinkProfileId;
+  label: string;
+  lengthM: number;
+  widthM: number;
+};
 
 export type FootSample = {
   foot: Foot;
@@ -23,10 +31,11 @@ export type MetricSample = FootSample & {
 };
 
 export type Calibration = {
-  /** Video coordinates in clockwise order: top-left, top-right, bottom-right, bottom-left. */
+  /** Normalized image coordinates of the four references tracked in every frame. */
   imageCorners: Point[];
-  widthM: number;
-  lengthM: number;
+  /** The same four references in the selected rink's metre coordinate system. */
+  rinkCornersM: Point[];
+  rinkProfile: RinkProfileId;
 };
 
 /** Per-frame rink-line positions used to cancel handheld camera movement. */
@@ -37,6 +46,7 @@ export type FrameCalibration = {
 };
 
 export type RinkLineReference = {
+  videoLineId: string;
   rinkLineId: HockeyRinkLineId;
   color: HockeyLineColor;
   start: Point;
@@ -45,7 +55,7 @@ export type RinkLineReference = {
 };
 
 export type PatternJson = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   source: { videoName: string; durationMs: number };
   coordinateSystem: "rink-floor-local-metres";
   calibration: Calibration;

@@ -1,6 +1,6 @@
 import type { Calibration, FootSample, FrameCalibration, MetricSample, Point, TravelDirection } from "./model";
 
-type Matrix3 = [number, number, number, number, number, number, number, number, number];
+export type Matrix3 = [number, number, number, number, number, number, number, number, number];
 
 type ProjectedFootSample = {
   sample: FootSample;
@@ -37,18 +37,14 @@ function solveLinearSystem(matrix: number[][], vector: number[]): number[] {
 
 /** Creates a projective transform from normalized video coordinates to metres on the ice. */
 export function makeHomography(calibration: Calibration): Matrix3 {
-  if (calibration.imageCorners.length !== 4) throw new Error("校正点を4点指定してください。");
-  const targets: Point[] = [
-    { x: 0, y: 0 },
-    { x: calibration.widthM, y: 0 },
-    { x: calibration.widthM, y: calibration.lengthM },
-    { x: 0, y: calibration.lengthM }
-  ];
+  if (calibration.imageCorners.length !== 4 || calibration.rinkCornersM.length !== 4) {
+    throw new Error("動画上とリンク図上で、対応する校正点を4点指定してください。");
+  }
 
   const rows: number[][] = [];
   const values: number[] = [];
   calibration.imageCorners.forEach((source, index) => {
-    const target = targets[index];
+    const target = calibration.rinkCornersM[index];
     rows.push([source.x, source.y, 1, 0, 0, 0, -source.x * target.x, -source.y * target.x]);
     values.push(target.x);
     rows.push([0, 0, 0, source.x, source.y, 1, -source.x * target.y, -source.y * target.y]);
@@ -59,6 +55,17 @@ export function makeHomography(calibration: Calibration): Matrix3 {
   return [a, b, c, d, e, f, g, h, 1];
 }
 
+export function invertHomography(matrix: Matrix3): Matrix3 {
+  const [a, b, c, d, e, f, g, h, i] = matrix;
+  const determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(determinant) < EPSILON) throw new Error("校正変換を反転できません。4点を広く離して指定してください。");
+  return [
+    (e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant,
+    (f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant,
+    (d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant
+  ];
+}
+
 export function project(point: Point, matrix: Matrix3): Point {
   const [a, b, c, d, e, f, g, h, i] = matrix;
   const denominator = g * point.x + h * point.y + i;
@@ -67,6 +74,11 @@ export function project(point: Point, matrix: Matrix3): Point {
     x: (a * point.x + b * point.y + c) / denominator,
     y: (d * point.x + e * point.y + f) / denominator
   };
+}
+
+/** Projects a metre-coordinate rink point back into normalized video coordinates. */
+export function projectRinkToVideo(pointM: Point, calibration: Calibration): Point {
+  return project(pointM, invertHomography(makeHomography(calibration)));
 }
 
 function normalize(point: Point): Point {
@@ -87,7 +99,8 @@ function travelDirection(samples: ProjectedFootSample[], index: number): TravelD
 
 /**
  * Converts feet to rink metres. When frame calibrations are supplied, each
- * timestamp is projected with its own homography anchored to the rink lines.
+ * timestamp is projected with its own homography anchored to the same named
+ * rink references selected on the video's reference frame.
  */
 export function makeMetricSamples(
   samples: FootSample[],
