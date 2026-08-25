@@ -5,6 +5,8 @@ export type CameraMotionMode = "fixed" | "rink-lines";
 export type TravelDirection = "F" | "B" | "?";
 export type EdgeCode = "LFO" | "LFI" | "LBO" | "LBI" | "RFO" | "RFI" | "RBO" | "RBI";
 export type EdgeReviewStatus = "unreviewed" | "confirmed" | "corrected";
+export type HockeyRinkLineId = "goal-left" | "blue-left" | "center" | "blue-right" | "goal-right";
+export type HockeyLineColor = "red" | "blue";
 
 export type FootSample = {
   foot: Foot;
@@ -34,6 +36,14 @@ export type FrameCalibration = {
   confidence: number;
 };
 
+export type RinkLineReference = {
+  rinkLineId: HockeyRinkLineId;
+  color: HockeyLineColor;
+  start: Point;
+  end: Point;
+  score: number;
+};
+
 export type PatternJson = {
   schemaVersion: 1;
   source: { videoName: string; durationMs: number };
@@ -41,6 +51,7 @@ export type PatternJson = {
   calibration: Calibration;
   tracks: Record<Foot, MetricSample[]>;
   notes: string[];
+  rinkLineReferences?: RinkLineReference[];
   cameraStabilization?: {
     mode: CameraMotionMode;
     referenceTimestampMs: number;
