@@ -1,6 +1,12 @@
-import type { Calibration, FootSample, MetricSample, Point, TravelDirection } from "./model";
+import type { Calibration, FootSample, FrameCalibration, MetricSample, Point, TravelDirection } from "./model";
 
 type Matrix3 = [number, number, number, number, number, number, number, number, number];
+
+type ProjectedFootSample = {
+  sample: FootSample;
+  toeM: Point;
+  heelM: Point;
+};
 
 const EPSILON = 1e-8;
 
@@ -68,36 +74,53 @@ function normalize(point: Point): Point {
   return length < EPSILON ? { x: 0, y: 0 } : { x: point.x / length, y: point.y / length };
 }
 
-function travelDirection(samples: FootSample[], index: number, matrix: Matrix3): TravelDirection {
+function travelDirection(samples: ProjectedFootSample[], index: number): TravelDirection {
   const before = samples[Math.max(0, index - 2)];
   const after = samples[Math.min(samples.length - 1, index + 2)];
-  const movement = normalize({
-    x: project(after.toe, matrix).x - project(before.toe, matrix).x,
-    y: project(after.toe, matrix).y - project(before.toe, matrix).y
-  });
+  const movement = normalize({ x: after.toeM.x - before.toeM.x, y: after.toeM.y - before.toeM.y });
   const current = samples[index];
-  const blade = normalize({
-    x: project(current.toe, matrix).x - project(current.heel, matrix).x,
-    y: project(current.toe, matrix).y - project(current.heel, matrix).y
-  });
+  const blade = normalize({ x: current.toeM.x - current.heelM.x, y: current.toeM.y - current.heelM.y });
   const dot = movement.x * blade.x + movement.y * blade.y;
   if (Math.abs(dot) < 0.28) return "?";
   return dot > 0 ? "F" : "B";
 }
 
 /**
- * Smooth only in chart space. It does not invent a full I/O edge label: a single
- * calibrated video does not observe the blade roll angle accurately enough.
+ * Converts feet to rink metres. When frame calibrations are supplied, each
+ * timestamp is projected with its own homography anchored to the rink lines.
  */
-export function makeMetricSamples(samples: FootSample[], calibration: Calibration): MetricSample[] {
-  const matrix = makeHomography(calibration);
-  return samples
+export function makeMetricSamples(
+  samples: FootSample[],
+  calibration: Calibration,
+  frameCalibrations?: FrameCalibration[]
+): MetricSample[] {
+  const staticMatrix = frameCalibrations ? undefined : makeHomography(calibration);
+  const frameMatrices = new Map<number, Matrix3>();
+  frameCalibrations?.forEach((frame) => {
+    try {
+      frameMatrices.set(frame.timestampMs, makeHomography({ ...calibration, imageCorners: frame.imageCorners }));
+    } catch {
+      // A bad line match is ignored instead of contaminating the trajectory.
+    }
+  });
+
+  const projected = samples
     .filter((sample) => sample.visibility >= 0.55)
-    .map((sample, index, visibleSamples) => ({
-      ...sample,
-      positionM: project(sample.toe, matrix),
-      direction: travelDirection(visibleSamples, index, matrix)
-    }));
+    .flatMap((sample) => {
+      const matrix = staticMatrix ?? frameMatrices.get(sample.timestampMs);
+      if (!matrix) return [];
+      try {
+        return [{ sample, toeM: project(sample.toe, matrix), heelM: project(sample.heel, matrix) }];
+      } catch {
+        return [];
+      }
+    });
+
+  return projected.map((current, index) => ({
+    ...current.sample,
+    positionM: current.toeM,
+    direction: travelDirection(projected, index)
+  }));
 }
 
 export function simplify(points: MetricSample[], minDistanceM = 0.025): MetricSample[] {
@@ -109,4 +132,3 @@ export function simplify(points: MetricSample[], minDistanceM = 0.025): MetricSa
     return result;
   }, []);
 }
-

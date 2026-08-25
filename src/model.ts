@@ -1,6 +1,7 @@
 export type Point = { x: number; y: number };
 
 export type Foot = "left" | "right";
+export type CameraMotionMode = "fixed" | "rink-lines";
 export type TravelDirection = "F" | "B" | "?";
 export type EdgeCode = "LFO" | "LFI" | "LBO" | "LBI" | "RFO" | "RFI" | "RBO" | "RBI";
 export type EdgeReviewStatus = "unreviewed" | "confirmed" | "corrected";
@@ -26,6 +27,13 @@ export type Calibration = {
   lengthM: number;
 };
 
+/** Per-frame rink-line positions used to cancel handheld camera movement. */
+export type FrameCalibration = {
+  timestampMs: number;
+  imageCorners: Point[];
+  confidence: number;
+};
+
 export type PatternJson = {
   schemaVersion: 1;
   source: { videoName: string; durationMs: number };
@@ -33,6 +41,12 @@ export type PatternJson = {
   calibration: Calibration;
   tracks: Record<Foot, MetricSample[]>;
   notes: string[];
+  cameraStabilization?: {
+    mode: CameraMotionMode;
+    referenceTimestampMs: number;
+    stabilizedFrames: number;
+    totalFrames: number;
+  };
 };
 
 export type TaskTemplateSegment = {

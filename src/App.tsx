@@ -1,19 +1,27 @@
-import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type MouseEvent as ReactMouseEvent, useMemo, useRef, useState } from "react";
 import { makeMetricSamples, simplify } from "./geometry";
-import type { Calibration, Foot, FootSample, MetricSample, PatternJson, Point } from "./model";
+import type { Calibration, CameraMotionMode, Foot, FootSample, FrameCalibration, MetricSample, PatternJson, Point } from "./model";
 import { analyseVideo } from "./pose";
 import { TaskDatasetPanel } from "./TaskDatasetPanel";
 
 const CORNER_NAMES = ["左奥", "右奥", "右手前", "左手前"];
 
+type AnalysisStats = { totalFrames: number; stabilizedFrames: number };
+type VideoSize = { width: number; height: number };
+
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [file, setFile] = useState<File>();
   const [videoUrl, setVideoUrl] = useState<string>();
+  const [videoSize, setVideoSize] = useState<VideoSize>();
   const [corners, setCorners] = useState<Point[]>([]);
   const [widthM, setWidthM] = useState(6);
   const [lengthM, setLengthM] = useState(8);
+  const [cameraMode, setCameraMode] = useState<CameraMotionMode>("fixed");
+  const [referenceTimestampMs, setReferenceTimestampMs] = useState(0);
   const [samples, setSamples] = useState<FootSample[]>([]);
+  const [frameCalibrations, setFrameCalibrations] = useState<FrameCalibration[]>([]);
+  const [analysisStats, setAnalysisStats] = useState<AnalysisStats>();
   const [progress, setProgress] = useState<number>();
   const [message, setMessage] = useState("動画を選び、ホッケーラインの交点を4点指定してください。");
 
@@ -21,15 +29,17 @@ function App() {
   const tracks = useMemo<Record<Foot, MetricSample[]> | undefined>(() => {
     if (!calibration || samples.length === 0) return undefined;
     try {
+      const perFrameCalibration = cameraMode === "rink-lines" ? frameCalibrations : undefined;
       return {
-        left: simplify(makeMetricSamples(samples.filter((sample) => sample.foot === "left"), calibration)),
-        right: simplify(makeMetricSamples(samples.filter((sample) => sample.foot === "right"), calibration))
+        left: simplify(makeMetricSamples(samples.filter((sample) => sample.foot === "left"), calibration, perFrameCalibration)),
+        right: simplify(makeMetricSamples(samples.filter((sample) => sample.foot === "right"), calibration, perFrameCalibration))
       };
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "校正に失敗しました。");
       return undefined;
     }
-  }, [calibration, samples]);
+  }, [calibration, cameraMode, frameCalibrations, samples]);
+  const hasTracks = Boolean(tracks && (tracks.left.length > 0 || tracks.right.length > 0));
 
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0];
@@ -37,15 +47,59 @@ function App() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setFile(selected);
     setVideoUrl(URL.createObjectURL(selected));
+    setVideoSize(undefined);
     setCorners([]);
     setSamples([]);
+    setFrameCalibrations([]);
+    setAnalysisStats(undefined);
+    setReferenceTimestampMs(0);
     setMessage("動画上で、既知サイズのホッケーライン長方形を左奥→右奥→右手前→左手前の順にタップしてください。");
   }
 
-  function addCorner(event: React.MouseEvent<HTMLDivElement>) {
-    if (corners.length === 4) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setCorners((current) => [...current, { x: (event.clientX - bounds.left) / bounds.width, y: (event.clientY - bounds.top) / bounds.height }]);
+  function onLoadedMetadata() {
+    const video = videoRef.current;
+    if (!video) return;
+    setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+  }
+
+  function addCorner(event: ReactMouseEvent<HTMLDivElement>) {
+    const video = videoRef.current;
+    if (!video || !videoSize || corners.length === 4) return;
+    const point = pointFromVideoStage(event, video);
+    if (!point) {
+      setMessage("黒い余白ではなく、映像部分にあるホッケーラインの交点をタップしてください。");
+      return;
+    }
+    if (corners.length === 3) {
+      const timestamp = Math.round(video.currentTime * 1000);
+      setReferenceTimestampMs(timestamp);
+      setMessage(cameraMode === "rink-lines"
+        ? `基準フレームを ${formatTime(timestamp)} に設定しました。ここから先をリンクライン基準で補正します。`
+        : "校正点を設定しました。軌跡を作れます。");
+    }
+    setCorners((current) => [...current, point]);
+    setSamples([]);
+    setFrameCalibrations([]);
+    setAnalysisStats(undefined);
+  }
+
+  function resetCalibration() {
+    setCorners([]);
+    setSamples([]);
+    setFrameCalibrations([]);
+    setAnalysisStats(undefined);
+    setReferenceTimestampMs(0);
+    setMessage("ホッケーライン長方形の4つの交点を、左奥から順に指定してください。");
+  }
+
+  function changeCameraMode(mode: CameraMotionMode) {
+    setCameraMode(mode);
+    setSamples([]);
+    setFrameCalibrations([]);
+    setAnalysisStats(undefined);
+    setMessage(mode === "rink-lines"
+      ? "移動カメラ補正を選びました。動画の解析開始位置で、隠れていないホッケーライン交点を4点指定してください。"
+      : "固定カメラ補正を選びました。ホッケーライン長方形を4点指定してください。");
   }
 
   async function runAnalysis() {
@@ -56,10 +110,26 @@ function App() {
       return;
     }
     setProgress(0);
-    setMessage("足先を追跡しています。長い動画では少し時間がかかります。");
+    setMessage(cameraMode === "rink-lines"
+      ? "足先とホッケーラインを追跡し、カメラ移動を補正しています。"
+      : "足先を追跡しています。長い動画では少し時間がかかります。");
     try {
-      setSamples(await analyseVideo(video, setProgress));
-      setMessage("軌跡を生成しました。I/Oエッジは、単眼動画だけでは確度不足のため未確定として扱います。");
+      const result = await analyseVideo(video, {
+        calibration,
+        cameraMode,
+        referenceTimestampMs,
+        onProgress: setProgress
+      });
+      if (cameraMode === "rink-lines" && result.stabilizedFrames === 0) {
+        throw new Error("ラインを追跡できませんでした。交点がはっきり見える開始フレームで4点を指定してください。");
+      }
+      setSamples(result.samples);
+      setFrameCalibrations(result.frameCalibrations);
+      setAnalysisStats({ totalFrames: result.totalFrames, stabilizedFrames: result.stabilizedFrames });
+      const trackingMessage = cameraMode === "rink-lines"
+        ? `ライン補正 ${result.stabilizedFrames}/${result.totalFrames} フレーム。追跡不能なフレームは軌跡から除外しました。`
+        : "軌跡を生成しました。";
+      setMessage(`${trackingMessage} I/Oエッジは、単眼動画だけでは確度不足のため未確定として扱います。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "解析に失敗しました。");
     } finally {
@@ -68,14 +138,22 @@ function App() {
   }
 
   function exportJson() {
-    if (!tracks || !calibration || !file || !videoRef.current) return;
+    if (!tracks || !hasTracks || !calibration || !file || !videoRef.current) return;
     const pattern: PatternJson = {
       schemaVersion: 1,
       source: { videoName: file.name, durationMs: Math.round(videoRef.current.duration * 1000) },
       coordinateSystem: "rink-floor-local-metres",
       calibration,
       tracks,
-      notes: ["F/Bは足先・かかとと移動方向から推定。I/Oは単眼動画では未確定。"]
+      notes: ["F/Bは足先・かかとと移動方向から推定。I/Oは単眼動画では未確定。", "移動カメラ時はホッケーライン交点をフレームごとに追跡して座標を補正。"],
+      ...(cameraMode === "rink-lines" && analysisStats ? {
+        cameraStabilization: {
+          mode: cameraMode,
+          referenceTimestampMs,
+          stabilizedFrames: analysisStats.stabilizedFrames,
+          totalFrames: analysisStats.totalFrames
+        }
+      } : {})
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(pattern, null, 2)], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -84,6 +162,10 @@ function App() {
     anchor.click();
     URL.revokeObjectURL(url);
   }
+
+  const overlayWidth = videoSize?.width ?? 1;
+  const overlayHeight = videoSize?.height ?? 1;
+  const overlayScale = Math.max(overlayWidth, overlayHeight);
 
   return (
     <main>
@@ -98,10 +180,16 @@ function App() {
           <span>1. 動画を選択</span>
           <input accept="video/*" type="file" onChange={chooseFile} />
         </label>
+        <label>撮影方法
+          <select value={cameraMode} onChange={(event) => changeCameraMode(event.target.value as CameraMotionMode)}>
+            <option value="fixed">固定カメラ</option>
+            <option value="rink-lines">移動カメラ（リンクライン補正）</option>
+          </select>
+        </label>
         <label>校正幅（m）<input type="number" min="0.5" step="0.1" value={widthM} onChange={(event) => setWidthM(Number(event.target.value))} /></label>
         <label>校正奥行（m）<input type="number" min="0.5" step="0.1" value={lengthM} onChange={(event) => setLengthM(Number(event.target.value))} /></label>
-        <button type="button" className="secondary" onClick={() => setCorners([])} disabled={corners.length === 0}>校正点をやり直す</button>
-        <button type="button" onClick={runAnalysis} disabled={!calibration || !file || progress !== undefined}>2. 軌跡を作る</button>
+        <button type="button" className="secondary" onClick={resetCalibration} disabled={corners.length === 0}>校正点をやり直す</button>
+        <button type="button" onClick={runAnalysis} disabled={!calibration || !file || progress !== undefined}>2. 補正して軌跡を作る</button>
       </section>
 
       <p className="notice">{message}{progress !== undefined && ` ${Math.round(progress * 100)}%`}</p>
@@ -111,13 +199,13 @@ function App() {
           <h2>動画とリンク校正</h2>
           {videoUrl ? (
             <div className="video-stage" onClick={addCorner}>
-              <video ref={videoRef} src={videoUrl} controls playsInline />
-              <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
-                {corners.length > 1 && <polyline points={corners.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#ffca62" strokeWidth="0.008" />}
+              <video ref={videoRef} src={videoUrl} controls playsInline onLoadedMetadata={onLoadedMetadata} />
+              <svg viewBox={`0 0 ${overlayWidth} ${overlayHeight}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                {corners.length > 1 && <polyline points={corners.map((point) => `${point.x * overlayWidth},${point.y * overlayHeight}`).join(" ")} fill="none" stroke="#ffca62" strokeWidth={overlayScale * 0.0035} />}
                 {corners.map((point, index) => (
                   <g key={`${point.x}-${point.y}`}>
-                    <circle cx={point.x} cy={point.y} r="0.023" fill="#ffca62" />
-                    <text x={point.x + 0.012} y={point.y - 0.012} fill="white" fontSize="0.04">{index + 1}</text>
+                    <circle cx={point.x * overlayWidth} cy={point.y * overlayHeight} r={overlayScale * 0.011} fill="#ffca62" />
+                    <text x={point.x * overlayWidth + overlayScale * 0.012} y={point.y * overlayHeight - overlayScale * 0.012} fill="white" fontSize={overlayScale * 0.027}>{index + 1}</text>
                   </g>
                 ))}
               </svg>
@@ -126,18 +214,40 @@ function App() {
           <ol className="corner-list">
             {CORNER_NAMES.map((name, index) => <li key={name} className={corners[index] ? "done" : ""}>{index + 1}. {name}</li>)}
           </ol>
+          {cameraMode === "rink-lines" && <p className="tracking-help">移動カメラでは、基準フレーム（{formatTime(referenceTimestampMs)}）から先を解析します。4点とも、スケーターに隠れないライン交点を選んでください。</p>}
         </article>
 
         <article className="panel">
-          <div className="panel-title"><h2>足軌跡パターン</h2><button type="button" className="secondary" onClick={exportJson} disabled={!tracks}>JSONを書き出す</button></div>
-          {tracks ? <PatternChart tracks={tracks} /> : <div className="empty">解析後、ここに左足・右足の軌跡が実寸で描画されます。</div>}
+          <div className="panel-title"><h2>足軌跡パターン</h2><button type="button" className="secondary" onClick={exportJson} disabled={!hasTracks}>JSONを書き出す</button></div>
+          {hasTracks && tracks ? <PatternChart tracks={tracks} /> : <div className="empty">解析後、ここに左足・右足の軌跡が実寸で描画されます。</div>}
           <p className="legend"><span className="left-dot" /> 左足　<span className="right-dot" /> 右足　→ は推定した前進／後進方向です。イン／アウトは推測で確定しません。</p>
+          {cameraMode === "rink-lines" && analysisStats && <p className="tracking-result">ライン補正率: {analysisStats.stabilizedFrames}/{analysisStats.totalFrames} フレーム</p>}
         </article>
       </section>
 
-      <TaskDatasetPanel tracks={tracks} videoName={file?.name} />
+      <TaskDatasetPanel tracks={hasTracks ? tracks : undefined} videoName={file?.name} />
     </main>
   );
+}
+
+function pointFromVideoStage(event: ReactMouseEvent<HTMLDivElement>, video: HTMLVideoElement): Point | undefined {
+  if (!video.videoWidth || !video.videoHeight) return undefined;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const sourceRatio = video.videoWidth / video.videoHeight;
+  const stageRatio = bounds.width / bounds.height;
+  const renderedWidth = sourceRatio > stageRatio ? bounds.width : bounds.height * sourceRatio;
+  const renderedHeight = sourceRatio > stageRatio ? bounds.width / sourceRatio : bounds.height;
+  const offsetX = (bounds.width - renderedWidth) / 2;
+  const offsetY = (bounds.height - renderedHeight) / 2;
+  const x = (event.clientX - bounds.left - offsetX) / renderedWidth;
+  const y = (event.clientY - bounds.top - offsetY) / renderedHeight;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return undefined;
+  return { x, y };
+}
+
+function formatTime(timestampMs: number): string {
+  const seconds = Math.max(0, Math.round(timestampMs / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function PatternChart({ tracks }: { tracks: Record<Foot, MetricSample[]> }) {
@@ -150,7 +260,7 @@ function PatternChart({ tracks }: { tracks: Record<Foot, MetricSample[]> }) {
   const width = Math.max(1, maxX - minX + padding * 2);
   const height = Math.max(1, maxY - minY + padding * 2);
   const project = (sample: MetricSample) => `${sample.positionM.x - minX + padding},${sample.positionM.y - minY + padding}`;
-  const endpoint = (samples: MetricSample[]) => samples.at(-1);
+  const endpoint = (items: MetricSample[]) => items.at(-1);
 
   return (
     <svg className="pattern-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="左右の足軌跡パターン">
@@ -180,4 +290,3 @@ function Track({ samples, color, project, label }: { samples: MetricSample[]; co
 }
 
 export default App;
-

@@ -1,0 +1,4 @@
+select { font: inherit; }
+.workflow select { min-width: 185px; border: 1px solid #b8c9ce; border-radius: 8px; padding: 8px 10px; background: white; color: #10212b; }
+.tracking-help, .tracking-result { margin: 12px 0 0; color: #526a73; font-size: .84rem; line-height: 1.55; }
+.tracking-result { font-weight: 750; color: #18736c; }
