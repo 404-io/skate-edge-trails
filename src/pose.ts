@@ -1,4 +1,5 @@
 import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
+import { invertHomography, makeHomographyFromPairs, project } from "./geometry";
 import { createRinkLineTracker } from "./lineTracking";
 import type { Calibration, CameraMotionMode, FootSample, FrameCalibration } from "./model";
 
@@ -28,7 +29,11 @@ export type VideoAnalysisResult = {
   stabilizedFrames: number;
 };
 
-/** Runs pose tracking and, when requested, re-measures the rink-line quadrilateral in every frame. */
+/**
+ * Runs pose tracking and, for moving camera footage, follows four actual image
+ * features. The feature transform then moves the virtual rink corners used by
+ * the metre-coordinate homography on every frame.
+ */
 export async function analyseVideo(video: HTMLVideoElement, options: VideoAnalysisOptions): Promise<VideoAnalysisResult> {
   const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
   const landmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -45,23 +50,42 @@ export async function analyseVideo(video: HTMLVideoElement, options: VideoAnalys
   const originalTime = video.currentTime;
   const fps = Math.min(15, Math.max(8, Math.round(video.videoHeight > 1080 ? 12 : 15)));
   const duration = video.duration;
+  const trackingReferencePoints = options.calibration.trackingImagePoints;
   const startTime = options.cameraMode === "rink-lines" ? Math.max(0, options.referenceTimestampMs / 1000) : 0;
   if (startTime >= duration - 0.02) {
     landmarker.close();
-    throw new Error("移動カメラ補正では、解析したい範囲の先頭付近でラインの4点を指定してください。");
+    throw new Error("移動カメラ補正では、解析したい範囲の先頭付近でラインの対応を作成してください。");
+  }
+  if (options.cameraMode === "rink-lines" && trackingReferencePoints?.length !== 4) {
+    landmarker.close();
+    throw new Error("移動カメラ補正では、校正スタジオで画面内の追跡点を4点追加してください。");
   }
 
   try {
     await seek(video, startTime);
-    const rinkLineTracker = options.cameraMode === "rink-lines" ? createRinkLineTracker(video, options.calibration.imageCorners) : undefined;
+    const rinkLineTracker = options.cameraMode === "rink-lines" && trackingReferencePoints
+      ? createRinkLineTracker(video, trackingReferencePoints)
+      : undefined;
     let totalFrames = 0;
 
     for (let time = startTime; time < duration; time += 1 / fps) {
       await seek(video, time);
       const timestampMs = Math.round(time * 1000);
       totalFrames += 1;
-      const frameCalibration = rinkLineTracker?.track(timestampMs);
-      if (frameCalibration) frameCalibrations.push(frameCalibration);
+      const trackedFeatures = rinkLineTracker?.track(timestampMs);
+      if (trackedFeatures && trackingReferencePoints) {
+        try {
+          // current video -> reference video -> current virtual rink geometry
+          const currentToReference = makeHomographyFromPairs(trackedFeatures.imageCorners, trackingReferencePoints);
+          const referenceToCurrent = invertHomography(currentToReference);
+          frameCalibrations.push({
+            ...trackedFeatures,
+            imageCorners: options.calibration.imageCorners.map((point) => project(point, referenceToCurrent))
+          });
+        } catch {
+          // Degenerate matches are discarded, leaving no projected foot sample for this frame.
+        }
+      }
 
       const result = landmarker.detectForVideo(video, timestampMs);
       const landmarks = result.landmarks[0];

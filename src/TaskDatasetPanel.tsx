@@ -68,7 +68,7 @@ export function TaskDatasetPanel({ tracks, videoName }: { tracks?: Record<Foot, 
         <div>
           <p className="eyebrow">TASK PRACTICE → REVIEWED DATASET</p>
           <h2>課題練習・エッジ確認</h2>
-          <p>ARには左の課題ガイドJSONを渡します。実走動画を確認してから、各区間の実際のエッジを確定してください。</p>
+          <p>ARには足ごとに分離した課題ガイドJSONを渡します。足替え位置は隙間を持つ別パスとして出力されます。</p>
         </div>
         <button type="button" className="secondary" onClick={exportGuide}>ARガイドJSON</button>
       </div>
@@ -115,14 +115,17 @@ export function TaskDatasetPanel({ tracks, videoName }: { tracks?: Record<Foot, 
 }
 
 function TemplateChart({ template, reviews }: { template: TaskTemplate; reviews: Record<string, ReviewDraft> }) {
-  const points = template.guidePointsM;
+  const subpaths = template.guideSubpathsM;
+  const points = subpaths.flatMap((path) => path.pointsM);
+  if (!points.length) return null;
+  const minY = Math.min(...points.map((point) => point.y));
   const maxY = Math.max(...points.map((point) => point.y));
   const minX = Math.min(...points.map((point) => point.x));
   const maxX = Math.max(...points.map((point) => point.x));
   const width = maxX - minX + 1.4;
-  const height = maxY + 1.2;
+  const height = maxY - minY + 1.2;
   const pointText = (point: { x: number; y: number }) => `${point.x - minX + .7},${maxY - point.y + .55}`;
-  const pointAt = (fraction: number) => points[Math.min(points.length - 1, Math.max(0, Math.round((points.length - 1) * fraction)))];
+  const start = subpaths[0].pointsM[0];
 
   return (
     <svg className="task-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${template.title}のAR課題ガイド`}>
@@ -130,19 +133,23 @@ function TemplateChart({ template, reviews }: { template: TaskTemplate; reviews:
         {Array.from({ length: Math.ceil(width) + 1 }, (_, index) => <line key={`x-${index}`} x1={index} y1="0" x2={index} y2={height} />)}
         {Array.from({ length: Math.ceil(height) + 1 }, (_, index) => <line key={`y-${index}`} x1="0" y1={index} x2={width} y2={index} />)}
       </g>
-      <polyline points={points.map(pointText).join(" ")} fill="none" stroke="#c6d5d8" strokeWidth=".12" strokeLinecap="round" />
+      {subpaths.map((path) => <polyline key={path.id} points={path.pointsM.map(pointText).join(" ")} fill="none" stroke="#c6d5d8" strokeWidth=".12" strokeLinecap="round" />)}
       {template.segments.map((segment, index) => {
-        const start = Math.round(segment.startFraction * (points.length - 1));
-        const end = Math.round(segment.endFraction * (points.length - 1));
+        const edgePoints = segment.guidePointsM;
+        if (!edgePoints.length) return null;
         const reviewed = reviews[segment.id]?.status !== "unreviewed";
-        const middle = pointAt((segment.startFraction + segment.endFraction) / 2);
+        const middle = edgePoints[Math.floor(edgePoints.length / 2)];
         return <g key={segment.id}>
-          <polyline points={points.slice(start, end + 1).map(pointText).join(" ")} fill="none" stroke={reviewed ? "#2d766f" : "#406fba"} strokeWidth=".13" strokeLinecap="round" />
+          <polyline points={edgePoints.map(pointText).join(" ")} fill="none" stroke={reviewed ? "#2d766f" : "#406fba"} strokeWidth=".13" strokeLinecap="round" />
           <text x={Number(pointText(middle).split(",")[0]) + .18} y={Number(pointText(middle).split(",")[1]) - .12} fontSize=".34" fontWeight="700" fill="#10212b">{index + 1}. {segment.expectedEdge}</text>
         </g>;
       })}
-      <circle cx={pointText(points[0]).split(",")[0]} cy={pointText(points[0]).split(",")[1]} r=".16" fill="#ff9b71" />
-      <text x={Number(pointText(points[0]).split(",")[0]) + .22} y={Number(pointText(points[0]).split(",")[1]) + .12} fontSize=".28" fill="#10212b">開始</text>
+      {template.guidePath.markers.map((item) => <g key={item.id}>
+        <circle cx={pointText(item.positionM).split(",")[0]} cy={pointText(item.positionM).split(",")[1]} r=".11" fill={item.kind === "step" ? "#ff9b71" : "#f2c878"} />
+        <text x={Number(pointText(item.positionM).split(",")[0]) + .16} y={Number(pointText(item.positionM).split(",")[1]) + .1} fontSize=".23" fill="#10212b">{item.label}</text>
+      </g>)}
+      <circle cx={pointText(start).split(",")[0]} cy={pointText(start).split(",")[1]} r=".16" fill="#ff9b71" />
+      <text x={Number(pointText(start).split(",")[0]) + .22} y={Number(pointText(start).split(",")[1]) + .12} fontSize=".28" fill="#10212b">開始</text>
     </svg>
   );
 }

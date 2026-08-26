@@ -35,16 +35,19 @@ function solveLinearSystem(matrix: number[][], vector: number[]): number[] {
   return augmented.map((row) => row[n]);
 }
 
-/** Creates a projective transform from normalized video coordinates to metres on the ice. */
-export function makeHomography(calibration: Calibration): Matrix3 {
-  if (calibration.imageCorners.length !== 4 || calibration.rinkCornersM.length !== 4) {
-    throw new Error("動画上とリンク図上で、対応する校正点を4点指定してください。");
+/**
+ * Creates a projective transform between two images of the same plane.
+ * Point order is correspondence order; it does not need to be clockwise.
+ */
+export function makeHomographyFromPairs(sourcePoints: Point[], targetPoints: Point[]): Matrix3 {
+  if (sourcePoints.length !== 4 || targetPoints.length !== 4) {
+    throw new Error("射影変換には対応する4点が必要です。");
   }
 
   const rows: number[][] = [];
   const values: number[] = [];
-  calibration.imageCorners.forEach((source, index) => {
-    const target = calibration.rinkCornersM[index];
+  sourcePoints.forEach((source, index) => {
+    const target = targetPoints[index];
     rows.push([source.x, source.y, 1, 0, 0, 0, -source.x * target.x, -source.y * target.x]);
     values.push(target.x);
     rows.push([0, 0, 0, source.x, source.y, 1, -source.x * target.y, -source.y * target.y]);
@@ -53,6 +56,11 @@ export function makeHomography(calibration: Calibration): Matrix3 {
 
   const [a, b, c, d, e, f, g, h] = solveLinearSystem(rows, values);
   return [a, b, c, d, e, f, g, h, 1];
+}
+
+/** Creates a projective transform from normalized video coordinates to metres on the ice. */
+export function makeHomography(calibration: Calibration): Matrix3 {
+  return makeHomographyFromPairs(calibration.imageCorners, calibration.rinkCornersM);
 }
 
 export function invertHomography(matrix: Matrix3): Matrix3 {
@@ -98,9 +106,8 @@ function travelDirection(samples: ProjectedFootSample[], index: number): TravelD
 }
 
 /**
- * Converts feet to rink metres. When frame calibrations are supplied, each
- * timestamp is projected with its own homography anchored to the same named
- * rink references selected on the video's reference frame.
+ * Converts feet to rink metres. Frame calibrations contain the reprojected
+ * virtual rink corners, while their source tracking points stay in video space.
  */
 export function makeMetricSamples(
   samples: FootSample[],

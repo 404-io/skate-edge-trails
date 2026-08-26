@@ -21,12 +21,15 @@ const TEMPLATE_HALF_SIZE = 6;
 const MIN_SCORE = 0.48;
 
 /**
- * Tracks the four manually selected hockey-line intersections. Each frame gets
- * its own quadrilateral, so a new rink-plane homography can remove camera pan,
- * rotation, zoom, and perspective change.
+ * Tracks four visible, manually selected image features. The points can be
+ * hockey-line crossings, line-to-board contacts, or other stable high-contrast
+ * marks; their order is correspondence order, not a screen-space polygon.
  */
-export function createRinkLineTracker(video: HTMLVideoElement, referenceCorners: Point[]): RinkLineTracker {
-  if (referenceCorners.length !== 4) throw new Error("移動カメラ補正には、ホッケーラインの交点を4点指定してください。");
+export function createRinkLineTracker(video: HTMLVideoElement, referencePoints: Point[]): RinkLineTracker {
+  if (referencePoints.length !== 4) throw new Error("移動カメラ補正には、画面内の追跡点を4点指定してください。");
+  if (!isPlausibleConfiguration(referencePoints)) {
+    throw new Error("追跡点は、一直線を避けて画面内に広く4点指定してください。");
+  }
   if (!video.videoWidth || !video.videoHeight) throw new Error("動画のサイズ情報を読み込めませんでした。");
 
   const longSide = 640;
@@ -50,7 +53,7 @@ export function createRinkLineTracker(video: HTMLVideoElement, referenceCorners:
   };
 
   const reference = readFrame();
-  const initialPixels = referenceCorners.map((point) => ({ x: point.x * width, y: point.y * height }));
+  const initialPixels = referencePoints.map((point) => ({ x: point.x * width, y: point.y * height }));
   const templates = initialPixels.map((point) => makeTemplate(reference, point));
   let previous = initialPixels;
   const searchRadius = Math.max(16, Math.min(44, Math.round(Math.min(width, height) * 0.07)));
@@ -63,7 +66,7 @@ export function createRinkLineTracker(video: HTMLVideoElement, referenceCorners:
 
       const confidentMatches = matches as Array<PixelPoint & { score: number }>;
       const imageCorners = confidentMatches.map((match) => ({ x: match.x / width, y: match.y / height }));
-      if (!isPlausibleQuadrilateral(imageCorners)) return undefined;
+      if (!isPlausibleConfiguration(imageCorners)) return undefined;
 
       previous = confidentMatches.map(({ x, y }) => ({ x, y }));
       return {
@@ -79,7 +82,7 @@ function makeTemplate(frame: GrayFrame, center: PixelPoint): Template {
   const x = Math.round(center.x);
   const y = Math.round(center.y);
   if (!isPatchInside(frame, x, y, TEMPLATE_HALF_SIZE)) {
-    throw new Error("指定点は映像端から離して、ラインが交わる位置を選んでください。");
+    throw new Error("追跡点は映像端から離して、ラインの交点や模様がある位置を選んでください。");
   }
 
   const side = TEMPLATE_HALF_SIZE * 2 + 1;
@@ -101,7 +104,7 @@ function makeTemplate(frame: GrayFrame, center: PixelPoint): Template {
     raw[valueIndex] = value - mean;
     squaredLength += raw[valueIndex] ** 2;
   });
-  if (squaredLength < 1_000) throw new Error("指定点の近くに十分なラインの模様がありません。ラインの交点を選んでください。");
+  if (squaredLength < 1_000) throw new Error("追跡点の近くに十分な模様がありません。ラインの交点やボードとの接点を選んでください。");
   const length = Math.sqrt(squaredLength);
   raw.forEach((value, valueIndex) => {
     raw[valueIndex] = value / length;
@@ -168,13 +171,37 @@ function isPatchInside(frame: GrayFrame, x: number, y: number, halfSize: number)
   return x - halfSize >= 0 && y - halfSize >= 0 && x + halfSize < frame.width && y + halfSize < frame.height;
 }
 
-function isPlausibleQuadrilateral(points: Point[]): boolean {
-  if (points.some((point) => point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1)) return false;
-  let doubledArea = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const next = points[(index + 1) % points.length];
-    doubledArea += current.x * next.y - current.y * next.x;
+function isPlausibleConfiguration(points: Point[]): boolean {
+  if (points.length !== 4 || points.some((point) => point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1)) return false;
+  for (let first = 0; first < points.length; first += 1) {
+    for (let second = first + 1; second < points.length; second += 1) {
+      if (Math.hypot(points[first].x - points[second].x, points[first].y - points[second].y) < 0.012) return false;
+    }
   }
-  return Math.abs(doubledArea) > 0.004;
+  const hull = convexHull(points);
+  return hull.length >= 3 && Math.abs(polygonArea(hull)) > 0.004;
+}
+
+function convexHull(points: Point[]): Point[] {
+  const sorted = [...points].sort((left, right) => left.x - right.x || left.y - right.y);
+  const cross = (origin: Point, first: Point, second: Point) =>
+    (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x);
+  const lower: Point[] = [];
+  sorted.forEach((point) => {
+    while (lower.length >= 2 && cross(lower.at(-2)!, lower.at(-1)!, point) <= 0) lower.pop();
+    lower.push(point);
+  });
+  const upper: Point[] = [];
+  [...sorted].reverse().forEach((point) => {
+    while (upper.length >= 2 && cross(upper.at(-2)!, upper.at(-1)!, point) <= 0) upper.pop();
+    upper.push(point);
+  });
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+function polygonArea(points: Point[]): number {
+  return points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - point.y * next.x;
+  }, 0) / 2;
 }
